@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.database import init_db
-from backend.routers import buckets, dashboard, datasets, examples, export, review, scoring
+from backend.routers import buckets, dashboard, datasets, estimator, examples, export, review, scoring, sources
 from backend.services.bucketing import ensure_default_buckets
 from backend.services.scoring_orchestrator import ScoringOrchestrator
 
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Upload and browsing will work, but scoring requires GPU + dependencies")
 
     scoring.orchestrator = orchestrator
+    sources.embedder = orchestrator.forge_embedder
     logger.info("ForgeRunner ready")
 
     yield
@@ -59,6 +60,8 @@ app.include_router(buckets.router, prefix="/api/buckets", tags=["buckets"])
 app.include_router(review.router, prefix="/api/review", tags=["review"])
 app.include_router(export.router, prefix="/api/export", tags=["export"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
+app.include_router(sources.router, prefix="/api/sources", tags=["sources"])
+app.include_router(estimator.router, prefix="/api/estimator", tags=["estimator"])
 
 
 @app.get("/api/health")

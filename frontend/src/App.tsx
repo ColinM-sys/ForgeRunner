@@ -5,6 +5,8 @@ import UploadPage from './pages/UploadPage';
 import DatasetDetailPage from './pages/DatasetDetailPage';
 import ReviewQueuePage from './pages/ReviewQueuePage';
 import ExportPage from './pages/ExportPage';
+import SourcesPage from './pages/SourcesPage';
+import EstimatorPage from './pages/EstimatorPage';
 
 export default function App() {
   return (
@@ -15,6 +17,8 @@ export default function App() {
         <Route path="/datasets/:id" element={<DatasetDetailPage />} />
         <Route path="/review" element={<ReviewQueuePage />} />
         <Route path="/export" element={<ExportPage />} />
+        <Route path="/sources" element={<SourcesPage />} />
+        <Route path="/estimator" element={<EstimatorPage />} />
       </Routes>
     </AppShell>
   );

@@ -1,9 +1,11 @@
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Upload, CheckSquare, Download, Hammer } from 'lucide-react';
+import { LayoutDashboard, Upload, CheckSquare, Download, Hammer, Globe, Calculator } from 'lucide-react';
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/upload', label: 'Upload', icon: Upload },
+  { to: '/sources', label: 'Source Checker', icon: Globe },
+  { to: '/estimator', label: 'Params Estimator', icon: Calculator },
   { to: '/review', label: 'Review Queue', icon: CheckSquare },
   { to: '/export', label: 'Export', icon: Download },
 ];

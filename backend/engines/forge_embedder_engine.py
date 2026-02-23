@@ -154,6 +154,30 @@ class ForgeEmbedderEngine:
         top_k = np.partition(similarities, -k)[-k:]
         return float(np.mean(top_k))
 
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """Embed arbitrary texts (for gap analysis, etc.)."""
+        if self.model is None:
+            raise RuntimeError("ForgeEmbedder not initialized")
+        return self.model.encode(
+            texts,
+            show_progress_bar=False,
+            batch_size=settings.SCORING_BATCH_SIZE,
+            normalize_embeddings=True,
+        )
+
+    async def embed_texts_async(self, texts: list[str]) -> np.ndarray:
+        """Async wrapper for embed_texts."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.embed_texts, texts)
+
+    def get_cached_embeddings_path(self, example_count: int) -> Path | None:
+        """Get the path to cached embeddings for a dataset of given size."""
+        cache_key = hashlib.md5(
+            f"{settings.EMBEDDING_MODEL}_{example_count}".encode()
+        ).hexdigest()
+        cache_path = self._cache_dir / f"{cache_key}.npy"
+        return cache_path if cache_path.exists() else None
+
     async def health_check(self) -> bool:
         return self.model is not None
 

@@ -11,6 +11,7 @@ from backend.config import settings
 from backend.database import async_session
 from backend.engines.cleanlab_engine import CleanlabEngine
 from backend.engines.forge_embedder_engine import ForgeEmbedderEngine
+from backend.engines.source_checker_engine import SourceCheckerEngine
 from backend.models.dataset import Dataset, DatasetStatus
 from backend.models.example import Example
 from backend.models.score import Score
@@ -46,12 +47,14 @@ class ScoringOrchestrator:
     def __init__(self):
         self.forge_embedder = ForgeEmbedderEngine()
         self.cleanlab = CleanlabEngine()
+        self.source_checker = SourceCheckerEngine()
         self._initialized = False
 
     async def initialize(self):
         """Initialize all engines."""
         await self.forge_embedder.initialize()
         await self.cleanlab.initialize()
+        await self.source_checker.initialize()
         self._initialized = True
         logger.info("Scoring orchestrator initialized")
 
@@ -119,9 +122,18 @@ class ScoringOrchestrator:
 
                 cleanlab_results = await self.cleanlab.score_batch(example_dicts, embeddings)
                 await self._save_scores(db, cleanlab_results)
-                job.progress = 0.7
+                job.progress = 0.6
 
-                # Step 3: Compute aggregate scores
+                # Step 3: Source Checker (fetches URLs, compares against source)
+                job.current_engine = "source_checker"
+                job.progress = 0.65
+                logger.info(f"Running SourceChecker on {len(examples)} examples...")
+
+                source_results = await self.source_checker.score_batch(example_dicts)
+                await self._save_scores(db, source_results)
+                job.progress = 0.75
+
+                # Step 4: Compute aggregate scores
                 job.current_engine = "aggregation"
                 job.progress = 0.8
                 await self._compute_aggregates(db, job.dataset_id)
@@ -186,7 +198,18 @@ class ScoringOrchestrator:
         await db.commit()
 
     async def _compute_aggregates(self, db: AsyncSession, dataset_id: str):
-        """Compute weighted aggregate scores for all examples."""
+        """Compute weighted aggregate scores for all examples.
+
+        Scoring weights (when all engines present):
+        - cleanlab:quality (outlier score) → 30% weight, higher = better
+        - forge_embedder:similarity (NN similarity) → 30% weight, higher = better
+        - cleanlab:duplicate (near_duplicate_score) → 20% weight, INVERTED (low = unique = good)
+        - source_checker:source_quality → 20% weight, higher = better source grounding
+        - forge_embedder:cluster → excluded (not a quality signal)
+        - source_checker:source_reachable → excluded (binary, not quality)
+
+        If source_checker scores are absent, weights rebalance to the other 3.
+        """
         result = await db.execute(
             select(Example).where(Example.dataset_id == dataset_id)
         )
@@ -201,12 +224,36 @@ class ScoringOrchestrator:
             if not scores:
                 continue
 
-            # Average all score values (equal weight for MVP)
-            score_values = [s.score_value for s in scores]
-            example.aggregate_score = sum(score_values) / len(score_values)
+            weighted_sum = 0.0
+            total_weight = 0.0
+
+            for s in scores:
+                key = f"{s.engine_name}:{s.score_type}"
+
+                if key == "cleanlab:quality":
+                    weighted_sum += s.score_value * 0.30
+                    total_weight += 0.30
+                elif key == "forge_embedder:similarity":
+                    weighted_sum += s.score_value * 0.30
+                    total_weight += 0.30
+                elif key == "cleanlab:duplicate":
+                    # Invert: low near_duplicate_score = unique = GOOD
+                    inverted = 1.0 - s.score_value
+                    weighted_sum += inverted * 0.20
+                    total_weight += 0.20
+                elif key == "source_checker:source_quality":
+                    weighted_sum += s.score_value * 0.20
+                    total_weight += 0.20
+                # forge_embedder:cluster, source_checker:source_reachable excluded
+
+            if total_weight > 0:
+                example.aggregate_score = weighted_sum / total_weight
+            else:
+                example.aggregate_score = 0.5
 
         await db.commit()
 
     async def shutdown(self):
         await self.forge_embedder.shutdown()
         await self.cleanlab.shutdown()
+        await self.source_checker.shutdown()

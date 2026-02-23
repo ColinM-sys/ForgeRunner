@@ -34,6 +34,22 @@ async def start_scoring(
     return {"job_id": job_id, "dataset_id": dataset_id, "status": "started"}
 
 
+@router.post("/reaggregate/{dataset_id}")
+async def reaggregate(
+    dataset_id: str,
+    db: AsyncSession = Depends(get_db),
+    orch: ScoringOrchestrator = Depends(get_orchestrator),
+):
+    """Recalculate aggregate scores without re-running engines."""
+    result = await db.execute(select(Dataset).where(Dataset.id == dataset_id))
+    dataset = result.scalar_one_or_none()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    await orch._compute_aggregates(db, dataset_id)
+    return {"status": "reaggregated", "dataset_id": dataset_id}
+
+
 @router.get("/status/{job_id}")
 async def scoring_status(job_id: str):
     """Check the status of a scoring job."""
