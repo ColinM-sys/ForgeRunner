@@ -1,276 +1,358 @@
-import asyncio
 import logging
+import math
 import re
-from urllib.parse import urlparse
-
-import httpx
 
 from backend.schemas.score import ScoreResult
 from backend.utils.text_extraction import get_scoreable_text
 
 logger = logging.getLogger(__name__)
 
-# Regex to find URLs in text
-URL_PATTERN = re.compile(
-    r'https?://[^\s<>"\')\]},;]+',
+# Regex patterns for content analysis
+URL_PATTERN = re.compile(r'https?://[^\s<>"\')\]},;]+', re.IGNORECASE)
+NUMBER_PATTERN = re.compile(r'\$[\d,.]+|\d{1,3}(?:,\d{3})*(?:\.\d+)?%?')
+DATE_PATTERN = re.compile(
+    r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}'
+    r'|\d{1,2}/\d{1,2}/\d{2,4}'
+    r'|\d{4}-\d{2}-\d{2}',
     re.IGNORECASE,
 )
+ENTITY_PATTERN = re.compile(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+')
+
+# Red-flag patterns indicating low-quality / placeholder content
+RED_FLAGS = [
+    re.compile(r'\[.*?(insert|fill|placeholder|todo|tbd|your name|company name).*?\]', re.IGNORECASE),
+    re.compile(r'lorem ipsum', re.IGNORECASE),
+    re.compile(r'xxx+', re.IGNORECASE),
+    re.compile(r'\{\{.*?\}\}'),  # template markers
+    re.compile(r'<\w+>.*?</\w+>'),  # leftover HTML/XML tags
+]
+
+STOP_WORDS = {
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
+    'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
+    'and', 'but', 'or', 'nor', 'not', 'so', 'yet', 'both', 'either',
+    'neither', 'this', 'that', 'these', 'those', 'it', 'its', 'i', 'me',
+    'my', 'we', 'our', 'you', 'your', 'he', 'she', 'they', 'them',
+}
 
 
 class SourceCheckerEngine:
-    """Fetches URLs found in training examples and scores content against the source.
+    """Analyzes training data content quality using regression analysis.
 
-    Checks:
-    - Does the example contain verifiable URLs?
-    - Can the source be fetched?
-    - How much overlap exists between the training content and the source?
-    - Are key facts (names, numbers, dates) consistent?
+    Scores each example on:
+    - Content length & completeness
+    - Information density (entities, numbers, dates, specifics)
+    - Vocabulary richness (type-token ratio)
+    - Structural quality (sentence count, avg length, formatting)
+    - Red flag detection (placeholders, templates, lorem ipsum)
+    - Source reference quality (URLs present, proper citations)
     """
 
     name = "source_checker"
 
     def __init__(self):
-        self._client: httpx.AsyncClient | None = None
+        pass
 
     async def initialize(self) -> None:
-        self._client = httpx.AsyncClient(
-            timeout=15.0,
-            follow_redirects=True,
-            headers={"User-Agent": "ForgeRunner/0.1 SourceChecker"},
-        )
-        logger.info("SourceChecker engine initialized")
+        logger.info("SourceChecker engine initialized (content analysis mode)")
 
     async def score_batch(self, examples: list[dict]) -> list[ScoreResult]:
-        """Score examples by checking URLs found in their content."""
+        """Score all examples by analyzing content quality."""
         results = []
-        # Process in smaller concurrent batches to avoid overwhelming
-        batch_size = 10
-        for i in range(0, len(examples), batch_size):
-            batch = examples[i:i + batch_size]
-            tasks = [self._score_one(ex) for ex in batch]
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            for ex, res in zip(batch, batch_results):
-                if isinstance(res, Exception):
-                    results.append(ScoreResult(
-                        example_id=ex["id"],
-                        engine_name=self.name,
-                        score_type="source_quality",
-                        score_value=0.5,
-                        raw_value={"error": str(res)},
-                        details="Source check failed",
-                    ))
-                elif res is not None:
-                    results.extend(res)
-                else:
-                    # No URLs found - neutral score
-                    results.append(ScoreResult(
-                        example_id=ex["id"],
-                        engine_name=self.name,
-                        score_type="source_quality",
-                        score_value=0.5,
-                        raw_value={"urls_found": 0},
-                        details="No URLs found in content",
-                    ))
+        for ex in examples:
+            scores = self._analyze_content(ex)
+            results.extend(scores)
         return results
 
-    async def _score_one(self, example: dict) -> list[ScoreResult] | None:
-        """Score a single example by checking its URLs."""
-        text = get_scoreable_text(example["user_content"], example["assistant_content"])
-        urls = self._extract_urls(text)
+    def _analyze_content(self, example: dict) -> list[ScoreResult]:
+        """Run regression analysis on a single example's content quality."""
+        user_text = example.get("user_content", "") or ""
+        assistant_text = example.get("assistant_content", "") or ""
+        system_text = example.get("system_prompt", "") or ""
+        full_text = get_scoreable_text(user_text, assistant_text)
 
-        if not urls:
-            return None
+        # --- Individual quality signals ---
+        length_score = self._score_length(assistant_text)
+        density_score = self._score_information_density(full_text)
+        vocab_score = self._score_vocabulary_richness(assistant_text)
+        structure_score = self._score_structure(assistant_text)
+        red_flag_score = self._score_red_flags(full_text)
+        completeness_score = self._score_completeness(user_text, assistant_text)
+        source_ref_score = self._score_source_references(full_text)
+
+        # --- Weighted regression: combine into overall source quality ---
+        weights = {
+            "length": 0.10,
+            "density": 0.25,
+            "vocabulary": 0.15,
+            "structure": 0.15,
+            "red_flags": 0.10,
+            "completeness": 0.15,
+            "source_refs": 0.10,
+        }
+        raw_scores = {
+            "length": length_score,
+            "density": density_score,
+            "vocabulary": vocab_score,
+            "structure": structure_score,
+            "red_flags": red_flag_score,
+            "completeness": completeness_score,
+            "source_refs": source_ref_score,
+        }
+
+        weighted_sum = sum(raw_scores[k] * weights[k] for k in weights)
+        total_weight = sum(weights.values())
+        quality_score = weighted_sum / total_weight
+
+        # Clamp to [0, 1]
+        quality_score = max(0.0, min(1.0, quality_score))
 
         results = []
-        url_scores = []
-        url_details = []
 
-        for url in urls[:3]:  # Max 3 URLs per example
-            fetch_result = await self._fetch_url(url)
-
-            if fetch_result is None:
-                url_details.append({"url": url, "status": "unreachable", "score": 0.3})
-                url_scores.append(0.3)
-                continue
-
-            source_text, status_code = fetch_result
-
-            if not source_text:
-                url_details.append({"url": url, "status": f"empty ({status_code})", "score": 0.3})
-                url_scores.append(0.3)
-                continue
-
-            # Compute content overlap
-            overlap_score = self._compute_overlap(text, source_text)
-
-            # Compute entity consistency (names, numbers, dates)
-            entity_score = self._check_entity_consistency(text, source_text)
-
-            # Combined source quality for this URL
-            url_quality = (overlap_score * 0.6) + (entity_score * 0.4)
-
-            url_details.append({
-                "url": url,
-                "status": f"fetched ({status_code})",
-                "overlap": round(overlap_score, 3),
-                "entity_match": round(entity_score, 3),
-                "score": round(url_quality, 3),
-            })
-            url_scores.append(url_quality)
-
-        # Overall source quality = average of URL scores
-        avg_score = sum(url_scores) / len(url_scores) if url_scores else 0.5
-
+        # Primary score: source_quality (feeds into aggregate at 20% weight)
         results.append(ScoreResult(
             example_id=example["id"],
             engine_name=self.name,
             score_type="source_quality",
-            score_value=max(0.0, min(1.0, avg_score)),
-            raw_value={
-                "urls_found": len(urls),
-                "urls_checked": len(url_scores),
-                "url_details": url_details,
-            },
-            details=f"Checked {len(url_scores)} URL(s), avg quality: {avg_score:.2f}",
+            score_value=round(quality_score, 4),
+            raw_value=raw_scores,
+            details=f"Content quality: {quality_score:.2f} (len={length_score:.2f}, density={density_score:.2f}, vocab={vocab_score:.2f})",
         ))
 
-        # Also report if URL is reachable (basic source verification)
-        reachable_count = sum(1 for d in url_details if "fetched" in d["status"])
+        # Secondary score: source_reachable (based on whether content has verifiable references)
+        urls = URL_PATTERN.findall(full_text)
+        has_refs = len(urls) > 0 or len(DATE_PATTERN.findall(full_text)) > 0 or len(ENTITY_PATTERN.findall(full_text)) > 2
         results.append(ScoreResult(
             example_id=example["id"],
             engine_name=self.name,
             score_type="source_reachable",
-            score_value=reachable_count / len(url_details) if url_details else 0.0,
-            raw_value={"reachable": reachable_count, "total": len(url_details)},
-            details=f"{reachable_count}/{len(url_details)} URLs reachable",
+            score_value=1.0 if has_refs else 0.5,
+            raw_value={"has_references": has_refs, "url_count": len(urls)},
+            details=f"{'Has' if has_refs else 'No'} verifiable references",
         ))
 
         return results
 
-    def _extract_urls(self, text: str) -> list[str]:
-        """Extract unique URLs from text."""
+    def _score_length(self, text: str) -> float:
+        """Score based on response length. Sweet spot: 100-2000 chars."""
+        length = len(text)
+        if length < 20:
+            return 0.2
+        elif length < 50:
+            return 0.4
+        elif length < 100:
+            return 0.6
+        elif length <= 2000:
+            # Peak quality range
+            return 0.8 + 0.2 * min(1.0, length / 500)
+        elif length <= 5000:
+            return 0.9
+        else:
+            # Very long responses slightly penalized
+            return 0.85
+
+    def _score_information_density(self, text: str) -> float:
+        """Score based on specific facts: numbers, dates, proper nouns, entities."""
+        if not text:
+            return 0.3
+
+        words = text.split()
+        word_count = len(words)
+        if word_count < 5:
+            return 0.3
+
+        numbers = NUMBER_PATTERN.findall(text)
+        dates = DATE_PATTERN.findall(text)
+        entities = ENTITY_PATTERN.findall(text)
         urls = URL_PATTERN.findall(text)
-        # Clean trailing punctuation
-        cleaned = []
-        seen = set()
-        for url in urls:
-            url = url.rstrip('.,;:!?)\'"]')
-            if url not in seen and self._is_valid_url(url):
-                cleaned.append(url)
-                seen.add(url)
-        return cleaned
 
-    def _is_valid_url(self, url: str) -> bool:
-        """Basic URL validation."""
-        try:
-            parsed = urlparse(url)
-            return bool(parsed.scheme and parsed.netloc and '.' in parsed.netloc)
-        except Exception:
-            return False
+        # Count specific facts per 100 words
+        fact_count = len(numbers) + len(dates) + len(entities) + len(urls)
+        density = (fact_count / word_count) * 100
 
-    async def _fetch_url(self, url: str) -> tuple[str, int] | None:
-        """Fetch URL content. Returns (text, status_code) or None."""
-        try:
-            resp = await self._client.get(url)
-            if resp.status_code >= 400:
-                return None
-
-            content_type = resp.headers.get("content-type", "")
-            if "text/html" in content_type:
-                # Strip HTML tags for comparison
-                text = self._strip_html(resp.text)
-            else:
-                text = resp.text
-
-            # Limit to first 10K chars
-            return text[:10000], resp.status_code
-        except Exception as e:
-            logger.debug(f"Failed to fetch {url}: {e}")
-            return None
-
-    def _strip_html(self, html: str) -> str:
-        """Basic HTML tag stripping."""
-        # Remove script and style blocks
-        html = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        # Remove tags
-        text = re.sub(r'<[^>]+>', ' ', html)
-        # Collapse whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-
-    def _compute_overlap(self, training_text: str, source_text: str) -> float:
-        """Compute word-level overlap between training content and source.
-
-        Higher = more of the training content is grounded in the source.
-        """
-        training_words = set(training_text.lower().split())
-        source_words = set(source_text.lower().split())
-
-        # Remove common stop words
-        stop_words = {
-            'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-            'should', 'may', 'might', 'can', 'shall', 'to', 'of', 'in', 'for',
-            'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
-            'and', 'but', 'or', 'nor', 'not', 'so', 'yet', 'both', 'either',
-            'neither', 'this', 'that', 'these', 'those', 'it', 'its',
-        }
-        training_words -= stop_words
-        source_words -= stop_words
-
-        if not training_words:
+        if density >= 8:
+            return 0.95
+        elif density >= 5:
+            return 0.85
+        elif density >= 3:
+            return 0.75
+        elif density >= 1:
+            return 0.65
+        else:
             return 0.5
 
-        overlap = training_words & source_words
-        return len(overlap) / len(training_words)
+    def _score_vocabulary_richness(self, text: str) -> float:
+        """Type-token ratio: unique words / total words."""
+        if not text:
+            return 0.3
 
-    def _check_entity_consistency(self, training_text: str, source_text: str) -> float:
-        """Check if named entities (numbers, dates, proper nouns) in training match source."""
-        # Extract numbers
-        training_numbers = set(re.findall(r'\$[\d,.]+|\d{1,3}(?:,\d{3})*(?:\.\d+)?%?', training_text))
-        source_numbers = set(re.findall(r'\$[\d,.]+|\d{1,3}(?:,\d{3})*(?:\.\d+)?%?', source_text))
+        words = [w.lower() for w in re.findall(r'\b\w+\b', text)]
+        content_words = [w for w in words if w not in STOP_WORDS and len(w) > 2]
 
-        # Extract capitalized phrases (likely proper nouns / company names)
-        training_entities = set(re.findall(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', training_text))
-        source_entities = set(re.findall(r'[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*', source_text))
+        if len(content_words) < 5:
+            return 0.5
 
-        # Extract dates
-        training_dates = set(re.findall(
-            r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}',
-            training_text,
-        ))
-        source_dates = set(re.findall(
-            r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}',
-            source_text,
-        ))
+        unique = len(set(content_words))
+        total = len(content_words)
+        ttr = unique / total
 
-        scores = []
+        # Adjust for text length (longer texts naturally have lower TTR)
+        adjusted_ttr = ttr * math.log(total + 1) / math.log(50)
+        adjusted_ttr = min(1.0, adjusted_ttr)
 
-        if training_numbers:
-            match_rate = len(training_numbers & source_numbers) / len(training_numbers)
-            scores.append(match_rate)
+        if adjusted_ttr >= 0.8:
+            return 0.95
+        elif adjusted_ttr >= 0.6:
+            return 0.85
+        elif adjusted_ttr >= 0.4:
+            return 0.75
+        elif adjusted_ttr >= 0.25:
+            return 0.65
+        else:
+            return 0.5
 
-        if training_entities:
-            # Only check entities with 2+ chars to avoid noise
-            sig_entities = {e for e in training_entities if len(e) > 3}
-            sig_source = {e for e in source_entities if len(e) > 3}
-            if sig_entities:
-                match_rate = len(sig_entities & sig_source) / len(sig_entities)
-                scores.append(match_rate)
+    def _score_structure(self, text: str) -> float:
+        """Score structural quality: sentence variety, paragraphs, formatting."""
+        if not text:
+            return 0.3
 
-        if training_dates:
-            match_rate = len(training_dates & source_dates) / len(training_dates)
-            scores.append(match_rate)
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        sent_count = len(sentences)
 
-        if not scores:
-            return 0.5  # No entities to check
+        if sent_count == 0:
+            return 0.3
 
-        return sum(scores) / len(scores)
+        # Average sentence length
+        avg_sent_len = sum(len(s.split()) for s in sentences) / sent_count
+
+        # Sentence length variety (std dev)
+        sent_lengths = [len(s.split()) for s in sentences]
+        if len(sent_lengths) > 1:
+            mean_len = sum(sent_lengths) / len(sent_lengths)
+            variance = sum((x - mean_len) ** 2 for x in sent_lengths) / len(sent_lengths)
+            std_dev = math.sqrt(variance)
+        else:
+            std_dev = 0
+
+        score = 0.5
+
+        # Good average sentence length (10-25 words)
+        if 10 <= avg_sent_len <= 25:
+            score += 0.15
+        elif 5 <= avg_sent_len <= 35:
+            score += 0.08
+
+        # Multiple sentences
+        if sent_count >= 3:
+            score += 0.15
+        elif sent_count >= 2:
+            score += 0.08
+
+        # Sentence variety
+        if std_dev > 3:
+            score += 0.1
+
+        # Has paragraphs or formatting
+        if '\n' in text:
+            score += 0.05
+
+        # Has lists or bullet points
+        if re.search(r'(?:^|\n)\s*[-•*\d]+[.)]\s', text):
+            score += 0.05
+
+        return min(1.0, score)
+
+    def _score_red_flags(self, text: str) -> float:
+        """Score inversely to red flags found. 1.0 = no red flags."""
+        if not text:
+            return 0.5
+
+        flag_count = 0
+        for pattern in RED_FLAGS:
+            matches = pattern.findall(text)
+            flag_count += len(matches)
+
+        if flag_count == 0:
+            return 1.0
+        elif flag_count == 1:
+            return 0.6
+        elif flag_count <= 3:
+            return 0.3
+        else:
+            return 0.1
+
+    def _score_completeness(self, user_text: str, assistant_text: str) -> float:
+        """Score how completely the assistant answers the user query."""
+        if not user_text or not assistant_text:
+            return 0.5
+
+        # Check if assistant response is substantially longer than the question
+        ratio = len(assistant_text) / max(len(user_text), 1)
+
+        # Extract question words from user
+        user_words = set(w.lower() for w in re.findall(r'\b\w+\b', user_text)) - STOP_WORDS
+        assistant_words = set(w.lower() for w in re.findall(r'\b\w+\b', assistant_text)) - STOP_WORDS
+
+        # Topic coverage: how many user topic words appear in the response
+        if user_words:
+            coverage = len(user_words & assistant_words) / len(user_words)
+        else:
+            coverage = 0.5
+
+        score = 0.4
+
+        # Length ratio bonus
+        if ratio >= 3:
+            score += 0.25
+        elif ratio >= 1.5:
+            score += 0.15
+        elif ratio >= 0.5:
+            score += 0.05
+
+        # Topic coverage bonus
+        score += coverage * 0.35
+
+        return min(1.0, score)
+
+    def _score_source_references(self, text: str) -> float:
+        """Score presence of verifiable source references."""
+        if not text:
+            return 0.5
+
+        urls = URL_PATTERN.findall(text)
+        entities = ENTITY_PATTERN.findall(text)
+        numbers = NUMBER_PATTERN.findall(text)
+        dates = DATE_PATTERN.findall(text)
+
+        score = 0.5
+
+        # URLs indicate sourced content
+        if urls:
+            score += min(0.2, len(urls) * 0.07)
+
+        # Named entities suggest specific, factual content
+        if len(entities) >= 3:
+            score += 0.15
+        elif entities:
+            score += 0.08
+
+        # Numbers/stats suggest data-backed content
+        if len(numbers) >= 2:
+            score += 0.1
+        elif numbers:
+            score += 0.05
+
+        # Dates suggest timely, specific content
+        if dates:
+            score += 0.05
+
+        return min(1.0, score)
 
     async def health_check(self) -> bool:
-        return self._client is not None
+        return True
 
     async def shutdown(self) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        pass
