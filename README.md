@@ -88,3 +88,10 @@ Upload JSONL > Ingest & Parse > Multi-Engine Scoring > Bucketing > Review Queue 
 - Python 3.10+
 - Node.js 18+
 - CUDA-capable GPU (for embeddings and scoring)
+
+
+---
+
+## Author
+
+Built by **Colin McDonough** — [LinkedIn](https://www.linkedin.com/in/colinmcdonoughmarketing) · [GitHub](https://github.com/ColinM-sys)
