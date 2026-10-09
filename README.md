@@ -57,6 +57,36 @@ npm run dev
 
 Open `http://localhost:5173`
 
+## Run it
+
+Two processes: the API and the dashboard. Start the API first.
+
+**Backend** (listens on `127.0.0.1:8000`, this PC only):
+
+```bash
+python -m backend
+```
+
+Pass `--host 0.0.0.0` only if you mean to serve it to other machines on your network. The API has no login.
+
+**Frontend** (dashboard at `http://localhost:5173`, proxies `/api` to the backend):
+
+```bash
+cd frontend
+npm run dev
+```
+
+**Tests**
+
+```bash
+# backend (pytest, from the repository root)
+python -m pytest
+
+# frontend (node --test; needs the \`npm test\` script from PR #5)
+cd frontend
+npm test
+```
+
 ## API Endpoints
 
 | Endpoint | Description |
