@@ -82,7 +82,7 @@ npm run dev
 # backend (pytest, from the repository root)
 python -m pytest
 
-# frontend (node --test; needs the \`npm test\` script from PR #5)
+# frontend (node --test; needs the npm test script from PR #5)
 cd frontend
 npm test
 ```
