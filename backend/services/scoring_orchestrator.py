@@ -215,11 +215,19 @@ class ScoringOrchestrator:
         )
         examples = result.scalars().all()
 
+        # One query for every score of the dataset, grouped in memory. The per-example query this
+        # replaces made one database round-trip per example (807 s on 50,000 examples; a single query: see the PR).
+        score_rows = (await db.execute(
+            select(Score.example_id, Score.engine_name, Score.score_type, Score.score_value)
+            .join(Example, Example.id == Score.example_id)
+            .where(Example.dataset_id == dataset_id)
+        )).all()
+        by_example: dict[str, list[tuple[str, str, float]]] = {}
+        for eid, engine_name, score_type, score_value in score_rows:
+            by_example.setdefault(eid, []).append((engine_name, score_type, score_value))
+
         for example in examples:
-            scores_result = await db.execute(
-                select(Score).where(Score.example_id == example.id)
-            )
-            scores = scores_result.scalars().all()
+            scores = by_example.get(example.id)
 
             if not scores:
                 continue
@@ -227,22 +235,22 @@ class ScoringOrchestrator:
             weighted_sum = 0.0
             total_weight = 0.0
 
-            for s in scores:
-                key = f"{s.engine_name}:{s.score_type}"
+            for engine_name, score_type, score_value in scores:
+                key = f"{engine_name}:{score_type}"
 
                 if key == "cleanlab:quality":
-                    weighted_sum += s.score_value * 0.30
+                    weighted_sum += score_value * 0.30
                     total_weight += 0.30
                 elif key == "forge_embedder:similarity":
-                    weighted_sum += s.score_value * 0.30
+                    weighted_sum += score_value * 0.30
                     total_weight += 0.30
                 elif key == "cleanlab:duplicate":
                     # Invert: low near_duplicate_score = unique = GOOD
-                    inverted = 1.0 - s.score_value
+                    inverted = 1.0 - score_value
                     weighted_sum += inverted * 0.20
                     total_weight += 0.20
                 elif key == "source_checker:source_quality":
-                    weighted_sum += s.score_value * 0.20
+                    weighted_sum += score_value * 0.20
                     total_weight += 0.20
                 # forge_embedder:cluster, source_checker:source_reachable excluded
 
