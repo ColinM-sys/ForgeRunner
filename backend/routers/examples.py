@@ -58,14 +58,18 @@ async def list_examples(
     examples = result.scalars().all()
 
     # Resolve bucket names
+    # One query for the page's buckets (the per-example lookup made up to one query per row)
+    bucket_ids = {ex.bucket_id for ex in examples if ex.bucket_id}
+    buckets = {}
+    if bucket_ids:
+        bucket_rows = await db.execute(select(Bucket).where(Bucket.id.in_(bucket_ids)))
+        buckets = {b.id: b for b in bucket_rows.scalars().all()}
     items = []
     for ex in examples:
         resp = ExampleResponse.model_validate(ex)
-        if ex.bucket_id:
-            bucket_result = await db.execute(select(Bucket).where(Bucket.id == ex.bucket_id))
-            bucket = bucket_result.scalar_one_or_none()
-            if bucket:
-                resp.bucket_name = bucket.display_name
+        bucket = buckets.get(ex.bucket_id) if ex.bucket_id else None
+        if bucket:
+            resp.bucket_name = bucket.display_name
         items.append(resp)
 
     return ExampleListResponse(items=items, total=total, page=page, page_size=page_size)
