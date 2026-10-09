@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from sqlalchemy import select
@@ -37,10 +38,16 @@ async def export_examples(db: AsyncSession, request: ExportRequest) -> tuple[Pat
     export_dir.mkdir(parents=True, exist_ok=True)
 
     import uuid
-    filename = f"export_{uuid.uuid4().hex[:8]}.jsonl"
-    file_path = export_dir / filename
-
-    raw_jsons = [ex.raw_json for ex in examples]
+    if request.format == "aft":
+        filename = f"aft_{uuid.uuid4().hex[:8]}.jsonl"
+        file_path = export_dir / filename
+        # Auto Fine Tuner's format: exactly {"messages": [...]} per line. The messages are kept as they were stored.
+        raw_jsons = [json.dumps({"messages": json.loads(ex.raw_json)["messages"]}, ensure_ascii=False)
+                     for ex in examples]
+    else:
+        filename = f"export_{uuid.uuid4().hex[:8]}.jsonl"
+        file_path = export_dir / filename
+        raw_jsons = [ex.raw_json for ex in examples]
     write_jsonl(file_path, raw_jsons)
 
     return file_path, len(examples)
