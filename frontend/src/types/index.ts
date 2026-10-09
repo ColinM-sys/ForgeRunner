@@ -91,6 +91,8 @@ export interface ExportRequest {
   review_status?: string;
   min_score?: number;
   max_score?: number;
+  // 'raw': the stored JSON (default). 'aft': exactly {"messages": [...]} per line, for Auto Fine Tuner.
+  format?: 'raw' | 'aft';
 }
 
 export interface ExportResponse {

@@ -24,11 +24,12 @@ export default function ExportPage() {
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => createExport({
+    mutationFn: (format: 'raw' | 'aft') => createExport({
       dataset_ids: selectedDatasets.length > 0 ? selectedDatasets : undefined,
       bucket_ids: selectedBuckets.length > 0 ? selectedBuckets : undefined,
       review_status: reviewStatus || undefined,
       min_score: minScore ? parseFloat(minScore) : undefined,
+      format,
     }),
     onSuccess: (data) => setExportResult(data),
   });
@@ -111,14 +112,25 @@ export default function ExportPage() {
           />
         </div>
 
-        <button
-          onClick={() => exportMutation.mutate()}
-          disabled={exportMutation.isPending}
-          className="w-full flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 text-white font-medium py-3 rounded-lg transition-colors"
-        >
-          <Download className="w-4 h-4" />
-          {exportMutation.isPending ? 'Exporting...' : 'Export JSONL'}
-        </button>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={() => exportMutation.mutate('raw')}
+            disabled={exportMutation.isPending}
+            className="flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 disabled:bg-orange-500/50 text-white font-medium py-3 rounded-lg transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            {exportMutation.isPending ? 'Exporting...' : 'Export JSONL'}
+          </button>
+          <button
+            onClick={() => exportMutation.mutate('aft')}
+            disabled={exportMutation.isPending}
+            title="Writes one messages object per line: the file Auto Fine Tuner trains on"
+            className="flex items-center justify-center gap-2 bg-gray-800 hover:bg-gray-700 disabled:bg-gray-800/50 text-white font-medium py-3 rounded-lg transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            Export for Auto Fine Tuner
+          </button>
+        </div>
       </div>
 
       {/* Export result */}
