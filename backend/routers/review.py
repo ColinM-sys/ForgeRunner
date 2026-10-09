@@ -10,6 +10,18 @@ from backend.services.review_service import batch_review, review_example
 router = APIRouter()
 
 
+# /batch is a static path: it must be declared before /{example_id}, or it is read as an example id.
+@router.post("/batch")
+async def review_batch(data: BatchReviewCreate, db: AsyncSession = Depends(get_db)):
+    """Batch review multiple examples."""
+    count = await batch_review(db, data.example_ids, data.action, data.notes)
+    return {
+        "status": "reviewed",
+        "count": count,
+        "action": data.action.value,
+    }
+
+
 @router.post("/{example_id}")
 async def review_single(
     example_id: str,
@@ -30,13 +42,3 @@ async def review_single(
         "review_id": review.id,
     }
 
-
-@router.post("/batch")
-async def review_batch(data: BatchReviewCreate, db: AsyncSession = Depends(get_db)):
-    """Batch review multiple examples."""
-    count = await batch_review(db, data.example_ids, data.action, data.notes)
-    return {
-        "status": "reviewed",
-        "count": count,
-        "action": data.action.value,
-    }
